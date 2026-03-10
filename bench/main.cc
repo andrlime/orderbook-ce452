@@ -19,7 +19,13 @@ static constexpr IdType MAX_ID = 65534;
 static constexpr int SEED_PER_LEVEL = 16;
 static constexpr int PRINT_EVERY_N = 10000;
 
+// 1B rounds with sniper would take like 2 days, so use 1M, should be enough to get 
+// stable measurements.
+#ifdef USE_SNIPER_ROI
+static constexpr int BENCH_ROUNDS = 1'000'000;
+#else
 static constexpr int BENCH_ROUNDS = 1'000'000'000;
+#endif
 
 // Ring buffer for tracking live passive order IDs to modify/cancel later.
 static constexpr int RING_SIZE = 1 << 16; // 65536, power of 2
@@ -53,6 +59,42 @@ build_pools(uint64_t seed)
     }
     return p;
 }
+
+/*
+// Workload profiles:
+//
+// Each profile controls the per-round operation mix.  You can select at compile time:
+//   cmake -DWORKLOAD=ADD_HEAVY | MODIFY_HEAVY | QUERY_HEAVY | BALANCED (default)
+//
+// Profiles are designed to stress different memory access patterns:
+//   ADD_HEAVY    – mostly appends to price levels; tests sequential write perf
+//   MODIFY_HEAVY – many ID lookups; stresses the ID→order data structure
+//   QUERY_HEAVY  – many volume reads; stresses the volume cache / price map
+//   BALANCED     – equal mix; matches the original benchmark workload
+*/
+struct WorkloadProfile {
+    int n_aggressive; // aggressive match_orders (cross spread) 
+    int n_passive;    // passive match_orders (resting) 
+    int n_modify;     // modify_order_by_id (quantity reduction) 
+    int n_cancel;     // modify_order_by_id (qty=0, cancel) 
+    int n_volume;     // get_volume_at_level queries 
+    const char* name;
+};
+
+[[maybe_unused]] static constexpr WorkloadProfile PROFILE_BALANCED    = {2, 2, 2, 2, 2, "balanced"};
+[[maybe_unused]] static constexpr WorkloadProfile PROFILE_ADD_HEAVY   = {4, 4, 0, 0, 2, "add_heavy"};
+[[maybe_unused]] static constexpr WorkloadProfile PROFILE_MODIFY_HEAVY= {1, 1, 5, 3, 1, "modify_heavy"};
+[[maybe_unused]] static constexpr WorkloadProfile PROFILE_QUERY_HEAVY = {1, 1, 1, 1, 8, "query_heavy"};
+
+#if defined(WORKLOAD_ADD_HEAVY)
+static constexpr WorkloadProfile PROFILE = PROFILE_ADD_HEAVY;
+#elif defined(WORKLOAD_MODIFY_HEAVY)
+static constexpr WorkloadProfile PROFILE = PROFILE_MODIFY_HEAVY;
+#elif defined(WORKLOAD_QUERY_HEAVY)
+static constexpr WorkloadProfile PROFILE = PROFILE_QUERY_HEAVY;
+#else
+static constexpr WorkloadProfile PROFILE = PROFILE_BALANCED;
+#endif
 
 template <OrderbookConcept OB>
 [[gnu::noinline]] void
@@ -99,7 +141,8 @@ run_bench()
         }
     }
 
-    std::printf("Seeded. Starting %d rounds...\n", BENCH_ROUNDS);
+    std::printf("Seeded. Workload: %s. Starting %d rounds...\n",
+                PROFILE.name, BENCH_ROUNDS);
     std::fflush(stdout);
 
 #ifdef USE_SNIPER_ROI
@@ -109,66 +152,77 @@ run_bench()
     int pi = 0, qi = 0, mi = 0, si = 0, vi = 0;
 
     for (int round = 0; round < BENCH_ROUNDS; ++round) {
+        //disable progress printing if sniper in use
+#ifndef USE_SNIPER_ROI
         if (round % PRINT_EVERY_N == 0) {
             std::printf("Reached round %u/%u\r", round, BENCH_ROUNDS);
             std::fflush(stdout);
         }
+#endif
 
         int sp = pools.spread[si++ & (POOL - 1)];
 
-        // Aggressive BUY — push so it gets cancelled if it rests
-        {
+        // Aggressive orders — cross the spread; may match resting orders
+        for (int i = 0; i < PROFILE.n_aggressive / 2; ++i) {
+            { // BUY aggressor
+                IdType id = alloc_id();
+                ob.match_order(Order{id, static_cast<PriceType>(PRICE_MID + sp), pools.qty[qi++ & (POOL - 1)], Side::BUY});
+                ring_push(id);
+            }
+            { // SELL aggressor
+                IdType id = alloc_id();
+                ob.match_order(Order{id, static_cast<PriceType>(PRICE_MID - sp), pools.qty[qi++ & (POOL - 1)], Side::SELL});
+                ring_push(id);
+            }
+        }
+        // Handle odd n_aggressive
+        if (PROFILE.n_aggressive % 2 != 0) {
             IdType id = alloc_id();
             ob.match_order(Order{id, static_cast<PriceType>(PRICE_MID + sp), pools.qty[qi++ & (POOL - 1)], Side::BUY});
             ring_push(id);
         }
 
-        // Aggressive SELL
-        {
-            IdType id = alloc_id();
-            ob.match_order(Order{id, static_cast<PriceType>(PRICE_MID - sp), pools.qty[qi++ & (POOL - 1)], Side::SELL});
-            ring_push(id);
+        // Passive orders — rest on the book
+        for (int i = 0; i < PROFILE.n_passive / 2; ++i) {
+            { // Passive BUY restore
+                IdType id = alloc_id();
+                ob.match_order(Order{id, pools.buy_px[pi++ & (POOL - 1)], pools.qty[qi++ & (POOL - 1)], Side::BUY});
+                ring_push(id);
+            }
+            { // Passive SELL restore
+                IdType id = alloc_id();
+                ob.match_order(Order{id, pools.sell_px[pi++ & (POOL - 1)], pools.qty[qi++ & (POOL - 1)], Side::SELL});
+                ring_push(id);
+            }
         }
-
-        // Passive BUY restore
-        {
+        if (PROFILE.n_passive % 2 != 0) {
             IdType id = alloc_id();
             ob.match_order(Order{id, pools.buy_px[pi++ & (POOL - 1)], pools.qty[qi++ & (POOL - 1)], Side::BUY});
             ring_push(id);
         }
 
-        // Passive SELL restore
-        {
-            IdType id = alloc_id();
-            ob.match_order(Order{id, pools.sell_px[pi++ & (POOL - 1)], pools.qty[qi++ & (POOL - 1)], Side::SELL});
-            ring_push(id);
+        // Modify orders (quantity reduction)
+        for (int i = 0; i < PROFILE.n_modify; ++i) {
+            IdType id = ring_pop();
+            if (id)
+                ob.modify_order_by_id(id, pools.mod_qty[mi++ & (POOL - 1)]);
         }
 
-        // Modify two old orders (one reduce, one cancel) — 4 pushes, 4 pops: net zero
-        {
-            IdType id = ring_pop();
-            if (id)
-                ob.modify_order_by_id(id, pools.mod_qty[mi++ & (POOL - 1)]);
-        }
-        {
-            IdType id = ring_pop();
-            if (id)
-                ob.modify_order_by_id(id, pools.mod_qty[mi++ & (POOL - 1)]);
-        }
-        {
-            IdType id = ring_pop();
-            if (id)
-                ob.modify_order_by_id(id, 0);
-        }
-        {
+        // Cancel orders (qty=0)
+        for (int i = 0; i < PROFILE.n_cancel; ++i) {
             IdType id = ring_pop();
             if (id)
                 ob.modify_order_by_id(id, 0);
         }
 
-        // Two volume queries
-        [[maybe_unused]] volatile uint32_t v1 = ob.get_volume_at_level(Side::BUY, pools.query_px[vi++ & (POOL - 1)]);
-        [[maybe_unused]] volatile uint32_t v2 = ob.get_volume_at_level(Side::SELL, pools.query_px[vi++ & (POOL - 1)]);
+        // Volume queries
+        for (int i = 0; i < PROFILE.n_volume / 2; ++i) {
+            [[maybe_unused]] volatile uint32_t v1 = ob.get_volume_at_level(Side::BUY,  pools.query_px[vi++ & (POOL - 1)]);
+            [[maybe_unused]] volatile uint32_t v2 = ob.get_volume_at_level(Side::SELL, pools.query_px[vi++ & (POOL - 1)]);
+        }
+        if (PROFILE.n_volume % 2 != 0) {
+            [[maybe_unused]] volatile uint32_t v1 = ob.get_volume_at_level(Side::BUY, pools.query_px[vi++ & (POOL - 1)]);
+        }
     }
 
 #ifdef USE_SNIPER_ROI
