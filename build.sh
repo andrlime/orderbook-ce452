@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Usage: ./build.sh [impl] [test|bench|obj|all]
-#   impl  — folder under implementations/ (default: reference)
-#   mode  — test | bench | obj | all (default: test)
+# Usage: ./build.sh [impl] [test|bench|obj|all] [workload]
+#   impl     — folder under implementations/ (default: reference)
+#   mode     — test | bench | obj | all (default: test)
+#   workload — BALANCED | ADD_HEAVY | MODIFY_HEAVY | QUERY_HEAVY (default: BALANCED)
 
 set -euo pipefail
 
 IMPL="${1:-reference}"
 MODE="${2:-test}"
+WORKLOAD="${3:-BALANCED}"
 
 BUILD_DIR="build/${IMPL}"
 CMAKE_BUILD_DIR="${BUILD_DIR}/cmake"
@@ -16,6 +18,7 @@ cmake_configure() {
         -G "Unix Makefiles" \
         -DCMAKE_BUILD_TYPE=Release \
         -DIMPL="${IMPL}" \
+        -DWORKLOAD="${WORKLOAD}" \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         ${SNIPER_ROOT:+-DSNIPER_ROOT="${SNIPER_ROOT}"}
 }
