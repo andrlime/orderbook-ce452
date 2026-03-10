@@ -8,6 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Which implementation to build (folder under implementations/)
 set(IMPL "reference" CACHE STRING "Implementation to build")
 
+# Workload profile for the benchmark (BALANCED | ADD_HEAVY | MODIFY_HEAVY | QUERY_HEAVY)
+set(WORKLOAD "BALANCED" CACHE STRING "Benchmark workload profile")
+
 add_compile_options(-O3 -march=native -Wall -Wextra -fno-omit-frame-pointer)
 
 # Static library for the chosen implementation
@@ -27,6 +30,12 @@ target_compile_options(run_tests PRIVATE -UNDEBUG)
 # Benchmark executable
 add_executable(bench bench/main.cc)
 target_link_libraries(bench PRIVATE engine_impl)
+
+# Forward the chosen workload profile as a preprocessor definition.
+# BALANCED is the default (no define needed; handled by #else in bench/main.cc).
+if(NOT WORKLOAD STREQUAL "BALANCED")
+    target_compile_definitions(bench PRIVATE WORKLOAD_${WORKLOAD})
+endif()
 
 # Optional Sniper integration
 if(DEFINED SNIPER_ROOT)
