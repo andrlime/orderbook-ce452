@@ -29,7 +29,7 @@ target_compile_options(run_tests PRIVATE -UNDEBUG)
 
 # Benchmark executable
 add_executable(bench bench/main.cc)
-target_link_libraries(bench PRIVATE engine_impl)
+target_link_libraries(bench PRIVATE engine_impl -static-libgcc -static-libstdc++)
 
 # Forward the chosen workload profile as a preprocessor definition.
 # BALANCED is the default (no define needed; handled by #else in bench/main.cc).
