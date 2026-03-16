@@ -11,7 +11,7 @@ set(IMPL "reference" CACHE STRING "Implementation to build")
 # Workload profile for the benchmark (BALANCED | ADD_HEAVY | MODIFY_HEAVY | QUERY_HEAVY)
 set(WORKLOAD "BALANCED" CACHE STRING "Benchmark workload profile")
 
-add_compile_options(-O3 -march=native -Wall -Wextra -fno-omit-frame-pointer)
+add_compile_options(-O3 -march=haswell -Wall -Wextra -fno-omit-frame-pointer)
 
 # Static library for the chosen implementation
 add_library(engine_impl STATIC
