@@ -58,7 +58,7 @@ echo "    binary : ${BINARY}"
 
 "${SNIPER_ROOT}/run-sniper" \
     -c "${CFG}" \
-    -o "${OUTPUT_DIR}" \
+    -d "${OUTPUT_DIR}" \
     -- "${BINARY}"
 
 echo "==> Done. Results in ${OUTPUT_DIR}"
