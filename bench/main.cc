@@ -22,7 +22,7 @@ static constexpr int PRINT_EVERY_N = 10000;
 // 1B rounds with sniper would take like 2 days, so use 1M, should be enough to get 
 // stable measurements.
 #ifdef USE_SNIPER_ROI
-static constexpr int BENCH_ROUNDS = 1'000'000;
+static constexpr int BENCH_ROUNDS = 64'000;
 #else
 static constexpr int BENCH_ROUNDS = 1'000'000'000;
 #endif
